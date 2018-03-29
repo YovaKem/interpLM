@@ -20,7 +20,7 @@ FLAGS_word_dim = 64
 BUCKET_WIDTH = 100
 NUM_BUCKETS = 3
 MAX_LEN = 300
-CREATE_BUCKETS = False
+CREATE_BUCKETS = True
 def shuffled_infinite_list(lst):
   order = range(len(lst))
   while True:
@@ -58,9 +58,11 @@ def create_buckets(filename):
             pickle.dump(bucket, open('{}.{}'.format(filename,j), "wb"))
             j+=1
     pickle.dump(dict(w2i),open('data/w2i.en','wb'))
+    print(j-1)
+    return j-1
 
-def read_traindata(filename):
-  for i in range(NUM_BUCKETS):
+def read_traindata(filename, j):
+  for i in range(j):
       stop_symbol = w2i["</s>"]
       with open('{}.{}'.format(filename,i+1), "rb") as fh:
         data = pickle.load(fh)
@@ -117,9 +119,9 @@ print("RUN WITH AND WITHOUT --dynet_autobatch=1")
 start = time.time()
 
 if CREATE_BUCKETS:
-    create_buckets(FLAGS_train)
+    j=create_buckets(FLAGS_train)
 w2i = pickle.load(open('data/w2i.en','rb'))
-train = list(read_traindata(FLAGS_train))
+train = list(read_traindata(FLAGS_train, j))
 vocab_size = len(w2i)
 valid = list(read_devdata(FLAGS_valid, w2i))
 assert vocab_size == len(w2i)  # Assert that vocab didn't grow.
