@@ -11,8 +11,8 @@ import pickle
 '''from https://github.com/clab/dynet/blob/master/examples/rnnlm/'''
 
 # path to Mikolov PTB train.txt and valid.txt
-FLAGS_train = '/home/yova/FBmorph/fastText/data/en/test.txt'
-FLAGS_valid = '/home/yova/FBmorph/fastText/data/en/test.txt'
+FLAGS_train = '/home/bkl121/hdrive/polyglot/data/en/train.en'
+FLAGS_valid = '/home/bkl121/hdrive/polyglot/data/en/valid.en'
 FLAGS_layers = 2
 FLAGS_hidden_dim = 512
 FLAGS_batch_size = 30
@@ -20,7 +20,8 @@ FLAGS_word_dim = 64
 BUCKET_WIDTH = 100
 NUM_BUCKETS = 3
 MAX_LEN = 300
-CREATE_BUCKETS = True
+CREATE_BUCKETS = False
+CREATE_DEV_BUCKETS = False
 def shuffled_infinite_list(lst):
   order = range(len(lst))
   while True:
@@ -28,8 +29,9 @@ def shuffled_infinite_list(lst):
     for i in order:
       yield lst[i]
 
-def create_buckets(filename):
-    w2i = defaultdict(lambda: len(w2i))
+def create_buckets(filename, w2i=None):
+    if w2i is None:
+        w2i = defaultdict(lambda: len(w2i))
     start_symbol = w2i["<s>"]
     stop_symbol = w2i["</s>"]
     unk_symbol = w2i['_UNK']
@@ -38,22 +40,24 @@ def create_buckets(filename):
     print("Splitting data into {0:d} buckets, each of width={1:d}".format(NUM_BUCKETS, buck_width))
     j=1
     with open(filename, "r") as in_file:
-        for i, line in enumerate(in_file, start=1):
+        for line in in_file:
             if len(line) > 0:
                 max_len = min(len(line), MAX_LEN)
                 buck_indx = ((max_len-1) // buck_width)
-                sent = [w2i[x] for x in line.strip()[:max_len]]
+                sent = [w2i[x] if x in w2i.keys() else w2i['_UNK'] for x in line.strip()[:max_len]]
                 buckets[buck_indx].append(sent)
-        for i,bucket in enumerate(buckets):
-            if len(bucket)>10000:
-                print("Bucket {0:d}, # items={1:d}".format((i+1)*BUCKET_WIDTH, len(bucket)))
-                pickle.dump(bucket, open('{}.{}'.format(filename,(j)), "wb"))
-                j+=1
-                buckets[i]=[]
+            for i,bucket in enumerate(buckets):
+                #print('--------------------')
+                #print(i,len(bucket))
+                if len(bucket)>500000:
+                    print("Bucket {0:d}, # items={1:d}".format((i+1)*BUCKET_WIDTH, len(bucket)))
+                    pickle.dump(bucket, open('{}.{}'.format(filename,(j)), "wb"))
+                    j+=1
+                    buckets[i]=[]
     # Saving bucket data
     print("Saving bucket data")
     for i, bucket in enumerate(buckets):
-        if len(bucket)<0:
+        if len(bucket)>0:
             print("Bucket {0:d}, # items={1:d}".format((i+1)*BUCKET_WIDTH, len(bucket)))
             pickle.dump(bucket, open('{}.{}'.format(filename,j), "wb"))
             j+=1
@@ -61,14 +65,17 @@ def create_buckets(filename):
     print(j-1)
     return j-1
 
-def read_traindata(filename, j):
-  for i in range(j):
-      stop_symbol = w2i["</s>"]
-      with open('{}.{}'.format(filename,i+1), "rb") as fh:
-        data = pickle.load(fh)
-        for line in data:
-          line.append(stop_symbol)
-          yield line
+def read_traindata(filename, j, train=1):
+    if train: list_idx = shuffled_infinite_list(list(range(j)))
+    else: list_idx = list(range(j))
+    for i in list_idx:
+        stop_symbol = w2i["</s>"]
+        with open('{}.{}'.format(filename,i+1), "rb") as fh:
+            data = pickle.load(fh)
+            if train: random.shuffle(data)
+            for line in data:
+                line.append(stop_symbol)
+                yield line
 
 def read_devdata(filename, w2i):
   stop_symbol = w2i["</s>"]
@@ -119,11 +126,19 @@ print("RUN WITH AND WITHOUT --dynet_autobatch=1")
 start = time.time()
 
 if CREATE_BUCKETS:
+    print('Train data buckets')
     j=create_buckets(FLAGS_train)
+else: j=158
 w2i = pickle.load(open('data/w2i.en','rb'))
-train = list(read_traindata(FLAGS_train, j))
+if CREATE_DEV_BUCKETS:
+    print('Dev data buckets')
+    k = create_buckets(FLAGS_valid, w2i)
+else: k = 11
+train = read_traindata(FLAGS_train, j)
+print('Train data ready')
 vocab_size = len(w2i)
-valid = list(read_devdata(FLAGS_valid, w2i))
+valid = read_traindata(FLAGS_valid, k, 0)
+print('Dev data is ready')
 assert vocab_size == len(w2i)  # Assert that vocab didn't grow.
 start_symbol = w2i["<s>"]
 
@@ -131,26 +146,27 @@ model = dy.Model()
 trainer = dy.AdamTrainer(model)
 
 lm = LSTMLM(model, vocab_size, start_symbol)
-
+len_train = 78391596
+len_valid = 4407591 
 print("startup time: %r" % (time.time() - start))
 start = time.time()
 epoch = all_sents = dev_time = all_words = this_words = this_loss = 0
-random_training_instance = shuffled_infinite_list(train)
+random_training_instance = train
 updates = 0
 while True:
   updates += 1
-  if updates % int(500 / FLAGS_batch_size) == 0:
+  if updates % int(5000 / FLAGS_batch_size) == 0:
     trainer.status()
     train_time = time.time() - start - dev_time
     all_words += this_words
     print("loss=%.4f, words per second=%.4f" %
           (this_loss / this_words, all_words / train_time))
     this_loss = this_words = 0
-  if updates % int(600 / FLAGS_batch_size) == 0:
+  if updates % int(100000 / FLAGS_batch_size) == 0:
     dev_start = time.time()
     dev_loss = dev_words = 0
-    for i in range(0, len(valid), FLAGS_batch_size):
-      valid_minibatch = valid[i:i + FLAGS_batch_size]
+    for i in range(0, len_valid, FLAGS_batch_size):
+      valid_minibatch = [next(valid) for _ in range(FLAGS_batch_size)]
       dy.renew_cg()  # Clear existing computation graph.
       loss_exp, mb_words = lm.minibatch_lm_loss(valid_minibatch)
       dev_loss += loss_exp.scalar_value()
@@ -170,7 +186,7 @@ while True:
     # Compute loss for one training minibatch.
   minibatch = [next(random_training_instance)
                for _ in range(FLAGS_batch_size)]
-
+  
   dy.renew_cg()  # Clear existing computation graph.
   loss_exp, mb_words = lm.minibatch_lm_loss(minibatch)
   this_loss += loss_exp.scalar_value()
@@ -180,18 +196,7 @@ while True:
   avg_minibatch_loss.forward()
   avg_minibatch_loss.backward()
   trainer.update()
-  cur_epoch = int(all_sents / len(train))
+  cur_epoch = int(all_sents / len_train)
   if cur_epoch != epoch:
-    dev_start = time.time()
-    dev_loss = dev_words = 0
-    for i in range(0, len(valid), FLAGS_batch_size):
-      valid_minibatch = valid[i:i + FLAGS_batch_size]
-      dy.renew_cg()  # Clear existing computation graph.
-      loss_exp, mb_words = lm.minibatch_lm_loss(valid_minibatch)
-      dev_loss += loss_exp.scalar_value()
-      dev_words += mb_words
-    print("nll=%.4f, ppl=%.4f, words=%r, time=%.4f, word_per_sec=%.4f" % (
-        dev_loss / dev_words, math.exp(dev_loss / dev_words), dev_words,
-        train_time, all_words / train_time))
     print("epoch %r finished" % cur_epoch)
     epoch = cur_epoch
